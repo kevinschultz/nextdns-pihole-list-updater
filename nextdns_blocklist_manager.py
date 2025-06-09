@@ -4,10 +4,9 @@ import json
 import time
 
 # --- Debugging Configuration ---
-# Set to a number to limit the total domains for this test. Set to None to run on all domains.
-DEBUG_DOMAIN_LIMIT = 100
-# The number of domains to process in each batch. User requested 25 for this test.
-CHUNK_SIZE = 25
+# Set to a number to limit the total domains for a test run.
+# Set to None to run on all domains for the full sync.
+DEBUG_DOMAIN_LIMIT = 20
 # --- End Debugging Configuration ---
 
 # Your NextDNS API Key and Profile ID from GitHub Secrets
@@ -58,39 +57,46 @@ def get_remote_blocklist_domains():
     return domains
 
 
-def execute_in_batches(session, domains, action):
-    """Adds or removes domains in batches."""
-    if not domains:
+def add_domains_one_by_one(session, domains_to_add):
+    """Adds domains one by one, which is slow but supported by the API."""
+    if not domains_to_add:
+        return
+        
+    print(f"\nAdding {len(domains_to_add)} domains one by one...")
+    for i, domain in enumerate(domains_to_add, 1):
+        payload = {"id": domain, "active": True}
+        try:
+            response = session.post(NEXTDNS_API_URL, json=payload, timeout=15)
+            if response.status_code == 409: # Conflict
+                print(f"  {i}/{len(domains_to_add)}: Skipping '{domain}' (already exists).")
+                continue
+            response.raise_for_status()
+            print(f"  {i}/{len(domains_to_add)}: Added '{domain}'")
+        except requests.exceptions.RequestException as e:
+            print(f"  ERROR adding '{domain}': {e}")
+        # Add a very short sleep to be polite to the API on sequential requests
+        time.sleep(0.1)
+
+
+def remove_domains_one_by_one(session, domains_to_remove):
+    """Removes domains one by one, which is slow but supported by the API."""
+    if not domains_to_remove:
         return
 
-    action_verb = "Adding" if action == 'add' else "Removing"
-    http_method = session.post if action == 'add' else session.delete
-    
-    domain_list = list(domains)
-    total_chunks = (len(domain_list) + CHUNK_SIZE - 1) // CHUNK_SIZE
-
-    print(f"\nPreparing to {action} {len(domains)} domains in {total_chunks} chunk(s) of {CHUNK_SIZE}.")
-
-    for i in range(0, len(domain_list), CHUNK_SIZE):
-        chunk = domain_list[i:i + CHUNK_SIZE]
-        current_chunk_num = (i // CHUNK_SIZE) + 1
-        
-        if action == 'add':
-            payload = [{"id": domain, "active": True} for domain in chunk]
-        else:
-            payload = [{"id": domain} for domain in chunk]
-
-        print(f"{action_verb} chunk {current_chunk_num} of {total_chunks} ({len(chunk)} domains)...")
+    print(f"\nRemoving {len(domains_to_remove)} domains one by one...")
+    for i, domain in enumerate(domains_to_remove, 1):
+        delete_url = f"{NEXTDNS_API_URL}/{domain}"
         try:
-            response = http_method(NEXTDNS_API_URL, json=payload, timeout=60)
+            response = session.delete(delete_url, timeout=15)
+            if response.status_code == 404: # Not Found
+                print(f"  {i}/{len(domains_to_remove)}: Skipping '{domain}' (does not exist).")
+                continue
             response.raise_for_status()
-            print(f"  Chunk {current_chunk_num} successful.")
+            print(f"  {i}/{len(domains_to_remove)}: Removed '{domain}'")
         except requests.exceptions.RequestException as e:
-            print(f"  ERROR on chunk {current_chunk_num}: {e}")
-            if e.response:
-                print(f"  Response Body: {e.response.text}")
-        
-        time.sleep(1)
+            print(f"  ERROR removing '{domain}': {e}")
+        # Add a very short sleep to be polite to the API
+        time.sleep(0.1)
 
 
 if __name__ == "__main__":
@@ -116,7 +122,7 @@ if __name__ == "__main__":
     # --- End Debugging Block ---
 
     if not desired_domains:
-        print("No domains to process after applying debug limit. Aborting.")
+        print("\nNo domains to process. Aborting.")
         exit(1)
 
     current_domains = get_current_denylist(api_session)
@@ -127,6 +133,6 @@ if __name__ == "__main__":
     if not domains_to_add and not domains_to_remove:
         print("\nYour NextDNS denylist is already up to date with the test list. No changes needed.")
     else:
-        execute_in_batches(api_session, domains_to_add, action='add')
-        execute_in_batches(api_session, domains_to_remove, action='remove')
-        print("\nDiagnostic test run complete.")
+        add_domains_one_by_one(api_session, domains_to_add)
+        remove_domains_one_by_one(api_session, domains_to_remove)
+        print("\nTest run update process complete.")
