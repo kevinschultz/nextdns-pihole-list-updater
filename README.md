@@ -1,1 +1,1 @@
-# nextdns-rihole-list-updater
+# nextdns-pihole-list-updater
