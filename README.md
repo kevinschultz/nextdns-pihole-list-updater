@@ -1,0 +1,1 @@
+# nextdns-rihole-list-updater
