@@ -15,10 +15,15 @@ NEXTDNS_API_URL = f"https://api.nextdns.io/profiles/{PROFILE_ID}/denylist"
 def get_current_denylist():
     """Fetches the current denylist from NextDNS."""
     headers = {"X-Api-Key": API_KEY}
-    response = requests.get(NEXTDNS_API_URL, headers=headers)
-    response.raise_for_status()
-    # When you GET rules, the domain is the 'id' field
-    return {item['id'] for item in response.json().get('data', [])}
+    try:
+        response = requests.get(NEXTDNS_API_URL, headers=headers)
+        response.raise_for_status()
+        return {item['id'] for item in response.json().get('data', [])}
+    except requests.exceptions.RequestException as e:
+        print(f"FATAL: Could not fetch current denylist. Error: {e}")
+        # Exit if we can't get the current state, to avoid incorrect additions/removals.
+        exit(1)
+
 
 def get_remote_blocklist_domains(blocklist_urls):
     """Fetches and parses domains from a list of blocklist URLs."""
@@ -39,11 +44,11 @@ def get_remote_blocklist_domains(blocklist_urls):
                     else:
                         domains.add(parts[0])
         except requests.exceptions.RequestException as e:
-            print(f"Error fetching {url}: {e}")
+            print(f"Warning: Could not fetch {url}. Error: {e}")
     return domains
 
 def update_denylist_in_batches(domains, action='add'):
-    """Adds or removes domains in batches using the correct API key for each action."""
+    """Adds or removes domains in batches, using the structure confirmed by Postman."""
     headers = {
         "X-Api-Key": API_KEY,
         "Content-Type": "application/json"
@@ -56,27 +61,27 @@ def update_denylist_in_batches(domains, action='add'):
     
     http_method = session.post if action == 'add' else session.delete
     
-    # --- THIS IS THE KEY CHANGE ---
-    # Use 'domain' as the key when adding, and 'id' when removing.
-    key_for_payload = 'domain' if action == 'add' else 'id'
-
     for i in range(0, len(domain_list), CHUNK_SIZE):
         chunk = domain_list[i:i + CHUNK_SIZE]
-        # Generate payload with the correct key
-        payload = {"rules": [{key_for_payload: domain} for domain in chunk]}
         
+        # --- THIS IS THE FINAL, CORRECT PAYLOAD STRUCTURE ---
+        if action == 'add':
+            # For adding, each rule needs "id" and "active: true"
+            payload = {"rules": [{"id": domain, "active": True} for domain in chunk]}
+        else: # action == 'remove'
+            # For removing, we only need to identify the rule by its "id"
+            payload = {"rules": [{"id": domain} for domain in chunk]}
+
         current_chunk_num = (i // CHUNK_SIZE) + 1
         action_verb = "Adding" if action == 'add' else "Removing"
         print(f"{action_verb} chunk {current_chunk_num} of {total_chunks} ({len(chunk)} domains)...")
 
         try:
             response = http_method(NEXTDNS_API_URL, json=payload, timeout=60)
-            # A successful response is 204 No Content
             response.raise_for_status()
             print(f"  Chunk {current_chunk_num} successful.")
         except requests.exceptions.RequestException as e:
             print(f"  ERROR on chunk {current_chunk_num}: {e}")
-            # The API should provide a more detailed error in the response body
             if e.response:
                 print(f"  Response Body: {e.response.text}")
         
